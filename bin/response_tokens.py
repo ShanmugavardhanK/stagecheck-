@@ -2,19 +2,26 @@
 
 This checks identities and byte references, never whether a quote supports a claim.
 """
-import re,shlex
+import os,re,shlex
 from pathlib import Path
 from common import encode
 
 LABELS=('SOURCE_PROVEN','TEST_PROVEN','RUNTIME_PROVEN','INDEPENDENTLY_REPRODUCED','INFERRED','UNKNOWN','NOT_APPLICABLE')
 HEADERS=('NOT DONE:','Full Blast Radius Check:','Enforcement Self-Check:')
 
+def stagecheck_home():
+    env=os.environ.get('STAGECHECK_HOME')
+    return Path(env).expanduser().resolve() if env else Path.home().resolve()
+
 def header_lines(text,emphasis=False):
     lines=[line for line in text.splitlines() if line.strip()]
     return [line.strip().strip('*_').strip() if emphasis else line for line in lines[:3]]
 
-def fact_tokens(text,root,home):
+def fact_tokens(text,root,home=None):
     """One detector: paths (quoted/Markdown/bare), hex, locators, URLs, labels, commands."""
+    if home is None:
+        home=stagecheck_home()
+    text=re.sub(r'[\u200b\u200c\u200d\ufeff\u2060]','',text)
     tokens=[]
     prefixes=[str(root).rstrip('/'),str(home).rstrip('/'),'/tmp']
     starts=r'(?:'+ '|'.join(re.escape(p) for p in sorted(set(prefixes),key=len,reverse=True))+r')(?=/|\b)'
@@ -37,6 +44,17 @@ def fact_tokens(text,root,home):
                             if len(shlex.split(value))>1:continue
                         except ValueError:pass
                 paths.append({'kind':'path','value':value,'line':line_no,'start':span[0],'end':span[1]});occupied.append(span)
+        # Relative delimited file paths
+        rel_pattern = r'[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*\.[a-zA-Z0-9]+|(?:\./|\.\./)[^\s`<>\[\]()\'\"]+'
+        for pattern in [r'`('+rel_pattern+r')`', r"['\"]("+rel_pattern+r")['\"]", r'\]\(('+rel_pattern+r')\)']:
+            for m in re.finditer(pattern, line):
+                span = m.span(1)
+                if any(a<=span[0]<b for a,b in occupied): continue
+                value = m[1].rstrip('.,;:')
+                if pattern.startswith('`') and re.search(r'\b(?:exit(?: status)?\s*[:=]?\s*-?\d+|result\b)', line, re.I):
+                    continue
+                paths.append({'kind':'path','value':value,'line':line_no,'start':span[0],'end':span[1]})
+                occupied.append(span)
         tokens+=paths
         for kind,pattern in [
           ('hex',r'\b(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{40})\b'),
@@ -54,19 +72,35 @@ def fact_tokens(text,root,home):
                     tokens.append({'kind':'command','value':value,'line':line_no,'start':m.start(),'end':m.end()})
     return sorted(tokens,key=lambda t:(t['line'],t['start'],t['kind']))
 
-def needs_claims(text,root,home):
+def needs_claims(text,root,home=None):
+    if home is None:
+        home=stagecheck_home()
     heads=header_lines(text,True)
     no_reads=len(heads)>=2 and heads[1].startswith(HEADERS[1]) and re.search(r'\bnothing (?:was )?read or run\b',heads[1],re.I)
     return not no_reads or bool(fact_tokens(text,root,home))
 
-def unbacked_tokens(text,data,root,home):
+def unbacked_tokens(text,data,root,home=None):
+    if home is None:
+        home=stagecheck_home()
     tokens=fact_tokens(text,root,home);citations=[e for c in data['claims'] for e in c['citations']]
+    text=re.sub(r'[\u200b\u200c\u200d\ufeff\u2060]','',text)
     serialized=encode(data).decode();answer_lines=text.splitlines();bad=[]
+    def path_matches(cite_path, val):
+        if not cite_path: return False
+        if cite_path == val: return True
+        try:
+            cp = Path(cite_path).resolve()
+            vp = Path(val)
+            if not vp.is_absolute():
+                return (root / vp).resolve() == cp
+            return vp.resolve() == cp
+        except Exception:
+            return False
     for token in tokens:
         kind,value=token['kind'],token['value'];backed=False
-        if kind=='path':backed=any(e.get('path')==value for e in citations)
-        elif kind=='hex':backed=value in serialized
-        elif kind=='url':backed=any(value in encode(e).decode() for e in citations) or any(value in c['text'] for c in data['claims'])
+        if kind=='path':backed=any(path_matches(e.get('path'), value) for e in citations)
+        elif kind=='hex':backed=any(value.lower() in encode(e).decode().lower() for e in citations) or any(value.lower()==str(data.get(k,'')).lower() for k in ('contract_sha256','record_sha256')) or any(value in c['text'] and bool(c.get('citations')) for c in data['claims'])
+        elif kind=='url':backed=any(value in encode(e).decode() for e in citations) or any(value in c['text'] and bool(c.get('citations')) for c in data['claims'])
         elif kind=='label':backed=any(c['label']==value and c['text'] in text for c in data['claims'])
         elif kind=='command':
             try:argv=shlex.split(value)
@@ -82,6 +116,6 @@ def unbacked_tokens(text,data,root,home):
             prior=[t for t in tokens if t['kind']=='path' and (t['line'],t['start'])<(token['line'],token['start'])]
             path=(min(same,key=lambda t:abs(t['start']-token['start'])) if same else prior[-1] if prior else {}).get('value')
             a,b=token['lines']
-            backed=a<=b and any(e.get('path')==path and 'lines' in e and e['lines'][0]<=a<=b<=e['lines'][1] for e in citations)
+            backed=a<=b and any(path_matches(e.get('path'), path) and 'lines' in e and e['lines'][0]<=a<=b<=e['lines'][1] for e in citations)
         if not backed:bad.append(token)
     return bad

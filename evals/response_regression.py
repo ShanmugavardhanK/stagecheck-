@@ -5,9 +5,17 @@ from run_evals import *
 def main():
     p=argparse.ArgumentParser();p.add_argument('--smoke',action='store_true');a=p.parse_args()
     tool=Path(__file__).resolve().parents[1]
-    programme=Path('/home/magnus/Desktop/Desk/WIP/1. Team/Dir/RWA/NewArc/3m')
+    env_prog = os.environ.get('STAGECHECK_PROGRAMME_ROOT')
+    programme = Path(env_prog) if env_prog and Path(env_prog).is_dir() else None
+    env_contract = os.environ.get('STAGECHECK_CONTRACT_PATH')
+    if env_contract and Path(env_contract).is_file():
+        contract = Path(env_contract)
+    elif programme and (programme.parent.parent / 'AGENTS.md').is_file():
+        contract = programme.parent.parent / 'AGENTS.md'
+    else:
+        contract = None
     with tempfile.TemporaryDirectory(prefix='response-regression-') as scratch:
-        run,data,root,ft=fixture(Path(scratch),tool,programme.parent.parent/'AGENTS.md',programme)
+        run,data,root,ft=fixture(Path(scratch),tool,contract,programme)
         for i in range(1,11):
             out=root/'evidence'/('sp1_t'+str(i).zfill(2))/'synthetic';out.mkdir(parents=True)
             raw=b'synthetic retention only\n';(out/'stdout').write_bytes(raw);(out/'stderr').write_bytes(b'')

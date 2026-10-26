@@ -34,17 +34,33 @@ def check(ctx, value):
         if role != 'Current-state pointer' and actual != identity['sha256']:
             bad('preflight.bound_hash', ctx.contract, True, role)
     contract_hash = digest(ctx.read(ctx.contract))
+    tokens = {
+        'PROGRAMME_ROOT': str(ctx.root),
+        'STAGECHECK_HOME': os.environ.get('STAGECHECK_HOME', str(Path.home())),
+    }
     for name in ctx.paths['instruction_copies']:
-        path = Path(name).expanduser()
+        resolved_name = resolve_tokens(name, tokens)
+        path = Path(resolved_name).expanduser()
         if not path.is_absolute():
-            path = ctx.root.parent.parent / path
+            if (ctx.root / path).is_file():
+                path = ctx.root / path
+            else:
+                path = ctx.root.parent.parent / path
+        if not path.is_file():
+            continue
         if digest(ctx.read(path)) != contract_hash:
             bad('preflight.instructions_differ', ctx.contract, key=name)
     entries = manifest_entries(ctx.tool)
-    reused = {'verify_manifest': '../evidence/claude_audits/tools/verify_manifest.py',
-              'verify_state_chain': '../evidence/claude_audits/tools/verify_state_chain.py',
-              'capture': '../qualification/reviews/capture_sp1_evidence.py'}
-    allowed_external = set(reused.values())
+    if 'tools/verify_manifest.py' in entries:
+        reused = {'verify_manifest': 'tools/verify_manifest.py',
+                  'verify_state_chain': 'tools/verify_state_chain.py',
+                  'capture': 'tools/capture_sp1_evidence.py'}
+    else:
+        reused = {'verify_manifest': '../evidence/claude_audits/tools/verify_manifest.py',
+                  'verify_state_chain': '../evidence/claude_audits/tools/verify_state_chain.py',
+                  'capture': '../qualification/reviews/capture_sp1_evidence.py'}
+    reused_set = set(reused.values())
+    allowed_external = {r for r in reused_set if r.startswith('..')}
     for rel, expected in sorted(entries.items()):
         path = ctx.tool / rel
         if not below(path.resolve(), ctx.tool) and rel not in allowed_external:
@@ -52,8 +68,8 @@ def check(ctx, value):
         if symlink_component(path):
             bad('preflight.symlink', ctx.tool / 'MANIFEST.sha256', key=rel)
         elif not path.is_file() or digest(ctx.read(path)) != expected:
-            bad('preflight.reused_hash' if rel in allowed_external else 'preflight.bound_hash',
-                ctx.tool / 'MANIFEST.sha256', rel not in allowed_external, rel)
+            bad('preflight.reused_hash' if rel in reused_set else 'preflight.bound_hash',
+                ctx.tool / 'MANIFEST.sha256', rel not in reused_set, rel)
     for path in sorted(ctx.tool.rglob('*')):
         if path.is_symlink():
             bad('preflight.symlink', ctx.tool / 'MANIFEST.sha256', key=str(path))

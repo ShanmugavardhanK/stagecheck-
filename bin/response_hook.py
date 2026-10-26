@@ -6,7 +6,7 @@ Owner rulings preserve raw claims except task/iteration and exempt the transport
 import fcntl,json,os,re,signal,stat,subprocess,sys,time
 from pathlib import Path
 from common import ToolError,bindings,canonical,create,digest,encode,load,loads,symlink_component
-from response_tokens import needs_claims
+from response_tokens import needs_claims, stagecheck_home
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'checks'))
 from secrets import findings as secret_findings
 from preflight import manifest_entries
@@ -42,12 +42,18 @@ def settings(tool,root):
     return value,claims,records
 
 def manifest_valid(tool):
-    allowed_external={'../evidence/claude_audits/tools/verify_manifest.py','../evidence/claude_audits/tools/verify_state_chain.py','../qualification/reviews/capture_sp1_evidence.py'}
-    for relative,expected in manifest_entries(tool).items():
-        path=tool/relative
+    entries = manifest_entries(tool)
+    if 'tools/verify_manifest.py' in entries:
+        allowed_external = set()
+    else:
+        allowed_external = {'../evidence/claude_audits/tools/verify_manifest.py',
+                            '../evidence/claude_audits/tools/verify_state_chain.py',
+                            '../qualification/reviews/capture_sp1_evidence.py'}
+    for relative, expected in entries.items():
+        path = tool / relative
         if not path.resolve().is_relative_to(tool.resolve()) and relative not in allowed_external:
             raise ToolError('hook external manifest path refused')
-        if symlink_component(path) or not path.is_file() or digest(path.read_bytes())!=expected:
+        if symlink_component(path) or not path.is_file() or digest(path.read_bytes()) != expected:
             raise ToolError('hook manifest identity refused')
     # Unlisted newly authored files are advisory until the owner's rebind.
     # Existing listed-byte mismatches are tool faults, never a send-back.
@@ -230,7 +236,7 @@ def hook(event,agent,root,contract,tool):
         if not found:
             lines=[line[8:] for line in answer.splitlines() if re.fullmatch(r'Claims: /[^\r\n]+',line)]
             if len(lines)>1:raise ToolError('hook duplicate claims lines')
-            if needs_claims(answer,root,Path.home()) and not lines:
+            if needs_claims(answer,root,stagecheck_home()) and not lines:
                 missing=True;found=synthetic_findings([('report.unbacked_token',1)],'missing-claims')
             else:
                 task_dir=root/'evidence/stagecheck'/task
@@ -278,8 +284,13 @@ def main():
         parser=argparse.ArgumentParser();parser.add_argument('--agent',required=True,choices=['codex','claude']);parser.add_argument('--root');parser.add_argument('--contract')
         args=parser.parse_args();tool=Path(__file__).resolve().parents[1];root=canonical(args.root) if args.root else tool.parent
         contract=canonical(args.contract) if args.contract else canonical(root.parent.parent/'AGENTS.md')
-        event=loads(sys.stdin.buffer.read())
+        raw_in = sys.stdin.buffer.read()
+        event=loads(raw_in)
         if isinstance(event,dict):output=hook(event,args.agent,root,contract,tool)
-    except (Exception,SystemExit):pass
+        else:output={'decision':'tool_error','tool_error':'event must be a json object'}
+    except Exception as exc:
+        output={'decision':'tool_error','tool_error':type(exc).__name__+': '+str(exc)}
+    except SystemExit:
+        output={'decision':'tool_error','tool_error':'cli argument parse failure'}
     print(json.dumps(output,ensure_ascii=False));return 0
 if __name__=='__main__':sys.exit(main())

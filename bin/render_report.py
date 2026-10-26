@@ -2,6 +2,10 @@
 from common import *
 
 
+def clean(text):
+    return re.sub(r'[\r\n\x00-\x1f\x7f]', ' ', str(text)).strip()
+
+
 def render(verdict, verdict_sha256):
     not_done = list(verdict['not_run']) + list(verdict['errors'])
     quality=verdict.get('quality')
@@ -50,9 +54,9 @@ def render(verdict, verdict_sha256):
         if not selected:
             lines += ['None.']
         for d in selected:
-            lines += ['', f'### {d["defect_id"]} · {d["check_id"]} · {d["status"]}',
-                      '- Rule: ' + d['clause'],
-                      f'- Where: {d["location"]["path"]}:{d["location"]["lines"]} · claim {d["claim_id"]}',
+            lines += ['', f'### {clean(d["defect_id"])} · {clean(d["check_id"])} · {clean(d["status"])}',
+                      '- Rule: ' + clean(d['clause']),
+                      f'- Where: {clean(d["location"]["path"])}:{d["location"]["lines"]} · claim {clean(d["claim_id"])}',
                       '- Classification: ' + ('self-check; not blocking' if mode=='report_only' else 'bound blocking check'),
                       '- Evidence label: ' + ('TEST_PROVEN (scope: the retained check execution)' if d['source'].startswith('checks/') else 'SOURCE_PROVEN (scope: the cited self-check output; no independent acceptance)')]
             for e in d['evidence']:
@@ -60,8 +64,8 @@ def render(verdict, verdict_sha256):
                     lines += [f'- Found: command {json.dumps(e["argv"])}; exit {e["exit_status"]}; stdout {e["stdout_sha256"]}; stderr {e["stderr_sha256"]}; record {e["record"]} SHA-256 {e["record_sha256"]}']
                 else:
                     fence='`'*max(3,1+max((len(x) for x in re.findall(r'`+',e['quote'])),default=0))
-                    lines += [f'- Found: {e["path"]}:{e["lines"]} SHA-256 {e["sha256"]}', fence+'text',e['quote'],fence]
-            lines += ['- Required outcome: ' + d['required_outcome']]
+                    lines += [f'- Found: {clean(e["path"])}:{e["lines"]} SHA-256 {e["sha256"]}', fence+'text',e['quote'],fence]
+            lines += ['- Required outcome: ' + clean(d['required_outcome'])]
     lines += ['', f'Counts: {verdict["counts"]["blocking"]} blocking; {verdict["counts"]["report_only"]} report-only; {verdict["counts"]["not_run"]} not run.']
     if verdict['questions']:
         lines += ['', '## Owner questions', *['- ' + q for q in verdict['questions']]]

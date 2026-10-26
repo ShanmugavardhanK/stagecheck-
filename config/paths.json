@@ -1,9 +1,11 @@
 {
   "additional_read_paths": [],
   "instruction_copies": [
-    "~/.codex/AGENTS.md",
-    "~/.claude/CLAUDE.md",
-    "CLAUDE.md"
+    "${STAGECHECK_HOME}/.codex/AGENTS.md",
+    "${STAGECHECK_HOME}/.claude/CLAUDE.md",
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".stagecheck/AGENTS.md"
   ],
   "note": "Programme roots come from the contract and descriptors. Extra paths require owner selection."
 }

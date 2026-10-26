@@ -54,6 +54,20 @@ def create(path, value):
         stream.write(encode(value))
 
 
+def resolve_tokens(value, tokens):
+    if isinstance(value, str):
+        for k, v in tokens.items():
+            target = f"${{{k}}}"
+            if target in value:
+                value = value.replace(target, str(v))
+        return value
+    elif isinstance(value, list):
+        return [resolve_tokens(x, tokens) for x in value]
+    elif isinstance(value, dict):
+        return {resolve_tokens(k, tokens): resolve_tokens(v, tokens) for k, v in value.items()}
+    return value
+
+
 def schema(value, rule, location='$'):
     supported = {'oneOf', 'type', 'properties', 'required', 'additionalProperties',
                  'items', 'minItems', 'maxItems', 'minLength', 'pattern', 'enum',
@@ -117,9 +131,18 @@ def below(path, root):
 
 
 def command(argv, cwd, timeout=30, env=None):
+    cmd = list(argv)
+    cmd_env = (env or os.environ).copy()
+    if cmd and cmd[0] == 'git':
+        cmd_env['GIT_CONFIG_GLOBAL'] = '/dev/null'
+        cmd_env['GIT_CONFIG_SYSTEM'] = '/dev/null'
+        cmd_env['GIT_CONFIG_NOSYSTEM'] = '1'
+        cmd_env['GIT_TERMINAL_PROMPT'] = '0'
+        if 'core.fsmonitor=false' not in ' '.join(cmd):
+            cmd = ['git', '-c', 'core.fsmonitor=false'] + cmd[1:]
     try:
-        r = subprocess.run(argv, cwd=cwd, input=None, capture_output=True,
-                           timeout=timeout, env=env, shell=False)
+        r = subprocess.run(cmd, cwd=cwd, input=None, capture_output=True,
+                           timeout=timeout, env=cmd_env, shell=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ToolError('command did not finish: ' + str(exc)) from exc
     return {'argv': list(argv), 'cwd': str(cwd), 'exit_status': r.returncode,
@@ -165,10 +188,18 @@ class Context:
         self.paths = load(self.tool / 'config/paths.json')
         self.allowed = [self.root / 'RWA', self.root / 'controls', self.tool]
         self.exact = [self.contract]
+        tokens = {
+            'PROGRAMME_ROOT': str(self.root),
+            'STAGECHECK_HOME': os.environ.get('STAGECHECK_HOME', str(Path.home())),
+        }
         for name in self.paths['instruction_copies']:
-            candidate = Path(name).expanduser()
+            resolved_name = resolve_tokens(name, tokens)
+            candidate = Path(resolved_name).expanduser()
             if not candidate.is_absolute():
-                candidate = self.root.parent.parent / candidate
+                if (self.root / candidate).is_file():
+                    candidate = self.root / candidate
+                else:
+                    candidate = self.root.parent.parent / candidate
             self.exact.append(candidate.resolve())
         for role in ['Evidence root', 'Product repositories', 'Qualification tree (§11)']:
             descriptor = Path(self.bind[role]['path'])
@@ -181,7 +212,7 @@ class Context:
             for k, v in values.items():
                 if k == 'root' or k.endswith('_root'):
                     self.allowed.append(Path(v).resolve())
-        self.allowed.extend(canonical(x) for x in self.paths['additional_read_paths'])
+        self.allowed.extend(canonical(resolve_tokens(x, tokens)) for x in self.paths['additional_read_paths'])
 
     def permitted(self, path):
         raw = Path(path).expanduser()
@@ -276,6 +307,7 @@ def main_check(name, fn):
     ctx = None
     try:
         ctx = Context(load(args.run))
+        ctx.output_dir = Path(args.output_dir)
         fn(ctx, value)
     except Exception as exc:
         value['errors'].append(type(exc).__name__ + ': ' + str(exc))

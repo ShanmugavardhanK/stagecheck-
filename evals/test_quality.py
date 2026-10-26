@@ -43,9 +43,17 @@ class Fixture(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory(prefix='quality-test-');self.addCleanup(self.tmp.cleanup)
         self.home=Path(self.tmp.name)
         self.tool=Path(__file__).resolve().parents[1]
-        self.programme=Path('/home/magnus/Desktop/Desk/WIP/1. Team/Dir/RWA/NewArc/3m')
-        self.contract=self.programme.parent.parent/'AGENTS.md'
+        env_prog = os.environ.get('STAGECHECK_PROGRAMME_ROOT')
+        self.programme = Path(env_prog) if env_prog and Path(env_prog).is_dir() else None
+        env_contract = os.environ.get('STAGECHECK_CONTRACT_PATH')
+        if env_contract and Path(env_contract).is_file():
+            self.contract = Path(env_contract)
+        elif self.programme and (self.programme.parent.parent / 'AGENTS.md').is_file():
+            self.contract = self.programme.parent.parent / 'AGENTS.md'
+        else:
+            self.contract = None
         self.run,self.data,self.root,self.ft=fixture(self.home,self.tool,self.contract,self.programme)
+        self.contract=Path(self.run['contract'])
         self.ctx=q.Context(self.run)
         self.records=q.roots(self.ctx)[1]
     def verdict(self,task='fixture',attempt=1,defect_id='D-fixture',check='citations',version=None):
@@ -73,7 +81,7 @@ class Fixture(unittest.TestCase):
             self.assertNotEqual(before['citations']['sha256'],after['citations']['sha256']);p.write_bytes(old)
         for path in ['bin/quality.py','config/modes.json','config/quality_targets.json','README.md']:
             p=self.ft/path;old=p.read_bytes();p.write_bytes(old+b'\n');self.assertEqual(before,q.versions(self.ctx));p.write_bytes(old)
-        c=self.ft/'bin/__pycache__';c.mkdir();(c/'x.pyc').write_bytes(b'fixture');self.assertEqual(before,q.versions(self.ctx))
+        c=self.ft/'bin/__pycache__';c.mkdir(exist_ok=True);(c/'x.pyc').write_bytes(b'fixture');self.assertEqual(before,q.versions(self.ctx))
     def test_writer_and_snapshot(self):
         path,v=self.verdict();first=q.append_record(self.ctx,self.label(path));chain,_=q.read_chain(self.records)
         self.assertEqual(len(chain),2);self.assertEqual(chain[0]['record']['kind'],'policy_snapshot')

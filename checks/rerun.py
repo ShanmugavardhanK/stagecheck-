@@ -2,13 +2,24 @@ import sys
 from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import *
 from authority import grant_valid, forbidden_endpoint
 
 
 def check(ctx, value):
+    preflight_file = getattr(ctx, 'output_dir', Path('/nonexistent')) / 'preflight.json'
+    if preflight_file.is_file():
+        try:
+            pf = loads(preflight_file.read_bytes())
+            if pf.get('unbound') or pf.get('errors') or any(d.get('check_id', '').startswith('preflight.') for d in pf.get('defects', [])):
+                value['not_run'].append('rerun: preflight unbound or defective; product rerun refused')
+                return
+        except Exception:
+            pass
     data = claims(ctx)
     config = loads(ctx.read(ctx.tool/'config/commands.json'))
+    config = resolve_tokens(config, {'PROGRAMME_ROOT': str(ctx.root)})
     cited = [(c['id'], x) for c in data['claims'] for x in c['citations'] if x['type']=='command']
     if not config['enabled']:
         if cited:

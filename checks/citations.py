@@ -37,18 +37,19 @@ def validate_citation(ctx, cite):
         committed = ctx.run_command(['git','-C',str(checkout),'show',cite['commit'] + ':' + cite['path']], checkout)
         if committed['exit_status'] or committed['stdout_sha256'] != cite['sha256']:
             return 'citation.upstream_identity'
+        lines = committed['stdout'].splitlines()
     else:
         path = Path(cite['path'])
-    if not path.is_file():
-        return 'citation.missing_file'
-    raw = ctx.read(path)
-    if digest(raw) != cite['sha256']:
-        return 'citation.hash_mismatch'
-    lines = raw.decode('utf-8').splitlines()
+        if not path.is_file():
+            return 'citation.missing_file'
+        raw = ctx.read(path)
+        if digest(raw) != cite['sha256']:
+            return 'citation.hash_mismatch'
+        lines = raw.decode('utf-8').splitlines()
     first, last = cite['lines']
     if first < 1 or last < first or last > len(lines):
         return 'citation.line_range'
-    if not cite['quote'] or cite['quote'] not in '\n'.join(lines[first-1:last]):
+    if not cite['quote'] or len(cite['quote'].strip()) < 4 or cite['quote'] not in '\n'.join(lines[first-1:last]):
         return 'citation.quote_not_found'
     return None
 

@@ -11,7 +11,7 @@ def findings(path, text):
     if denied:
         found.append(('secret.filename',1))
     for line, content in enumerate(text.splitlines(),1):
-        if re.search(r'-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----',content):
+        if re.search(r'-----BEGIN (?:[A-Za-z0-9_-]+ )?PRIVATE KEY(?: for [a-zA-Z0-9_.-]+)?-----',content):
             found.append(('secret.pem',line))
         # Hash-valued identifiers are explicitly excluded. A key assignment needs
         # a credential name AND a non-placeholder value, not a bare digest.

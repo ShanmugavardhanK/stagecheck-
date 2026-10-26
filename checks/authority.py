@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import *
 from citations import validate_citation
 
@@ -86,6 +87,7 @@ def check(ctx, value):
     data = claims(ctx)
     remote_config = loads(ctx.read(ctx.tool / 'config/remotes.json'))
     config = loads(ctx.read(ctx.tool / 'config/commands.json'))
+    config = resolve_tokens(config, {'PROGRAMME_ROOT': str(ctx.root)})
     if not ctx.run.get('response'):
         repo = canonical(ctx.run['repo'])
         names = ctx.run_command(['git','-C',str(repo),'remote'], repo)

@@ -1,6 +1,7 @@
 """One owner-launched iteration. No automatic generator invocation."""
 from datetime import datetime, timezone
 import fnmatch
+import signal
 from common import *
 from render_report import render
 from agents import select_agents, call_agent, validate_instruction
@@ -75,20 +76,39 @@ def depth_for(paths, repo, requested, config):
 def capture_check(ctx,name,run_path,out):
     directory=out/(name+'.execution')
     directory.mkdir()
-    argv=[sys.executable,str(ctx.tool/'checks'/ (name+'.py')),'--run',str(run_path),'--output-dir',str(out)]
+    argv=[sys.executable,'-I',str(ctx.tool/'checks'/ (name+'.py')),'--run',str(run_path),'--output-dir',str(out)]
     env=os.environ.copy();env['PYTHONDONTWRITEBYTECODE']='1'
-    r=subprocess.run(argv,cwd=ctx.tool,env=env,capture_output=True,timeout=120,shell=False)
-    (directory/'stdout').write_bytes(r.stdout)
-    (directory/'stderr').write_bytes(r.stderr)
-    execution={'argv':argv,'cwd':str(ctx.tool),'exit':r.returncode,
-               'stdout_sha256':digest(r.stdout),'stderr_sha256':digest(r.stderr)}
+    check_timeout=120
+    if name=='rerun':
+        try:
+            cmd_cfg=load(ctx.tool/'config/commands.json')
+            if cmd_cfg.get('enabled') and cmd_cfg.get('commands'):
+                max_t=max(c.get('timeout_seconds',0)+c.get('smoke_timeout_seconds',0) for c in cmd_cfg['commands'])
+                check_timeout=max(check_timeout,max_t+30)
+        except Exception:
+            pass
+    p=subprocess.Popen(argv,cwd=ctx.tool,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    try:
+        stdout,stderr=p.communicate(timeout=check_timeout)
+        exit_code=p.returncode
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(p.pid),signal.SIGKILL)
+        except OSError:
+            pass
+        stdout,stderr=p.communicate()
+        raise
+    (directory/'stdout').write_bytes(stdout)
+    (directory/'stderr').write_bytes(stderr)
+    execution={'argv':argv,'cwd':str(ctx.tool),'exit':exit_code,
+               'stdout_sha256':digest(stdout),'stderr_sha256':digest(stderr)}
     create(directory/'execution.json',execution)
     value=load(out/(name+'.json'))
     schema(value,load(ctx.tool/'schemas/verdict.schema.json'))
     if value.get('type')!='check' or value['id']!=name:
         raise ToolError('wrong check output identity')
     expected=3 if value['errors'] else 1 if value['defects'] else 0
-    if r.returncode!=expected:
+    if exit_code!=expected:
         raise ToolError('check exit status differs from its output')
     if value['defects']:
         # Each observed finding resolves to the actual checker invocation and
@@ -96,8 +116,8 @@ def capture_check(ctx,name,run_path,out):
         # JSON, avoiding self-referential result hashes and secret quotations.
         cite={'type':'command','record':str(directory/'execution.json'),
               'record_sha256':digest((directory/'execution.json').read_bytes()),'argv':argv,
-              'cwd':str(ctx.tool),'exit_status':r.returncode,
-              'stdout_sha256':digest(r.stdout),'stderr_sha256':digest(r.stderr)}
+              'cwd':str(ctx.tool),'exit_status':exit_code,
+              'stdout_sha256':digest(stdout),'stderr_sha256':digest(stderr)}
         for defect in value['defects']:
             defect['evidence']=[cite]
     return value
@@ -127,7 +147,11 @@ def main():
         parser.error('delivery mode requires --repo and --base')
     tool=Path(__file__).resolve().parent.parent
     root=canonical(args.root) if args.root else tool.parent
-    contract=canonical(args.contract) if args.contract else canonical(root.parent.parent/'AGENTS.md')
+    if args.contract:
+        contract = canonical(args.contract)
+    else:
+        candidates = [root / 'AGENTS.md', root / '.stagecheck/AGENTS.md', root.parent.parent / 'AGENTS.md']
+        contract = next((canonical(c) for c in candidates if c.is_file()), canonical(root.parent.parent / 'AGENTS.md'))
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,79}',args.task) or args.base is not None and args.base.startswith('-'):
         parser.error('task or base is not a valid owner input')
     identities=bindings(contract)
@@ -173,6 +197,11 @@ def main():
             status=None;verdict.update(checked_head='response',dirty=False,status_sha256=digest(b''),response=True)
         else:
             repo=canonical(args.repo)
+            git_config = Path(repo)/'.git/config'
+            if git_config.is_file():
+                cfg_text = git_config.read_text()
+                if re.search(r'\[filter\b|\bfsmonitor\b|\bclean\s*=|\bsmudge\s*=', cfg_text, re.I):
+                    raise ToolError('unapproved repo-level git configuration: custom filter or fsmonitor')
             git=command(['git','-C',str(repo),'rev-parse','--show-toplevel'],repo)
             if git['exit_status'] or canonical(git['stdout'].strip())!=repo:
                 raise ToolError('repo argument must be the exact git repository root')
@@ -236,6 +265,8 @@ def main():
             try:
                 if args.response and name in ['qual_naming','rerun']:
                     checked=result(name);checked['not_run'].append(name+': response mode: no repository change')
+                elif name=='rerun' and (verdict['checks'][0]['unbound'] or verdict['checks'][0]['errors'] or any(d['check_id'].startswith('preflight.') for d in verdict['checks'][0]['defects'])):
+                    checked=result(name);checked['not_run'].append('rerun: preflight unbound or defective; execution skipped')
                 else:
                     checked=capture_check(ctx,name,out/'run.json',checks_out)
             except Exception as exc:

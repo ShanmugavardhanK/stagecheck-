@@ -55,7 +55,10 @@ def versions(ctx):
         if rel.startswith(('config/','schemas/','settings/')) or rel.endswith('.py') and not rel.startswith(('checks/','evals/')):
             shared.add(rel)
     modules={Path(rel).stem:rel for rel in files if rel.endswith('.py') and rel not in ADDED and not rel.startswith('evals/')}
-    extras={'../evidence/claude_audits/tools/verify_manifest.py','../evidence/claude_audits/tools/verify_state_chain.py','../qualification/reviews/capture_sp1_evidence.py'}
+    if 'tools/verify_manifest.py' in files:
+        extras={'tools/verify_manifest.py','tools/verify_state_chain.py','tools/capture_sp1_evidence.py'}
+    else:
+        extras={'../evidence/claude_audits/tools/verify_manifest.py','../evidence/claude_audits/tools/verify_state_chain.py','../qualification/reviews/capture_sp1_evidence.py'}
     result={}
     for name in CHECKS:
         selected=shared|{'checks/'+name+'.py'}; todo=list(selected)
@@ -537,7 +540,10 @@ def blocking_evidence(ctx,exclude,current_defects):
         current=versions(qctx);_,folder=roots(qctx)
         with locked(folder):
             value['record_files']=record_anchors(folder)
-            chain,_=read_chain(folder);runs,_=real_verdicts(qctx,exclude);check_anchors(folder,chain,runs)
+            chain,_=read_chain(folder);runs,invalid_verdicts=real_verdicts(qctx,exclude)
+            if invalid_verdicts:
+                raise ToolError('unreadable or corrupt task verdict files in history')
+            check_anchors(folder,chain,runs)
             overrides,_,_=effective(qctx,chain,runs,override_only=True)
             try:
                 measured=measure_data(qctx,exclude);psha=measured['policy_sha256'];value['policy_sha256']=psha
@@ -553,7 +559,8 @@ def blocking_evidence(ctx,exclude,current_defects):
             for name in CHECKS:
                 entry=value['checks'][name]
                 c=measured['checks'][name] if measured else None
-                earlier=c['pending_count'] if c else len(stats[name]['pending'])
+                pending_list=c['pending'] if c else stats[name]['pending']
+                earlier=sum(1 for p in pending_list if p['task']!=ctx.run['task_id'])
                 observed={(r['value']['task_id'],d['defect_id']) for r in runs.values() for d in r['value']['defects'] if d['source']=='checks/'+name+'.py' and any(x['id']==name and x.get('version')==current[name]['sha256'] for x in r['value']['checks'])}
                 own={(ctx.run['task_id'],d['defect_id']) for d in current_defects if d['source']=='checks/'+name+'.py'}-observed
                 entry.update(earlier_pending_count=earlier,current_pending_count=len(own),pending_count=earlier+len(own))

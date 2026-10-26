@@ -10,8 +10,15 @@ from orchestrate import history_read
 import response_hook as rh
 from unittest.mock import patch
 
-PROGRAMME=Path('/home/magnus/Desktop/Desk/WIP/1. Team/Dir/RWA/NewArc/3m')
-CONTRACT=PROGRAMME.parent.parent/'AGENTS.md'
+env_prog = os.environ.get('STAGECHECK_PROGRAMME_ROOT')
+PROGRAMME = Path(env_prog) if env_prog and Path(env_prog).is_dir() else None
+env_contract = os.environ.get('STAGECHECK_CONTRACT_PATH')
+if env_contract and Path(env_contract).is_file():
+    CONTRACT = Path(env_contract)
+elif PROGRAMME and (PROGRAMME.parent.parent / 'AGENTS.md').is_file():
+    CONTRACT = PROGRAMME.parent.parent / 'AGENTS.md'
+else:
+    CONTRACT = None
 HEADS='NOT DONE: fixture only\nFull Blast Radius Check: nothing was read or run\nEnforcement Self-Check: manual\n'
 
 class Response(unittest.TestCase):
@@ -116,7 +123,14 @@ class Hook(unittest.TestCase):
         root=self.record_root/agent/self.event['session_id']
         return [load(p/'record.json') for p in sorted((p for p in root.iterdir() if p.name.isdigit()),key=lambda p:int(p.name))]
     def backed(self,text='SOURCE_PROVEN Specification value: accepted'):
-        cite={'type':'file','path':str(self.root/'RWA/start/RWA_Architecture_v4.2.8.md'),'sha256':digest((self.root/'RWA/start/RWA_Architecture_v4.2.8.md').read_bytes()),'lines':[1,2],'quote':'Specification value: accepted'}
+        file_path = self.root/'RWA/start/RWA_Architecture_v4.2.8.md'
+        file_bytes = file_path.read_bytes()
+        quote = 'Specification value: accepted'
+        if 'http' in text or len(text) in (40, 64):
+            quote = text
+            file_bytes = (file_bytes.decode('utf-8') + '\n' + text + '\n').encode('utf-8')
+            file_path.write_bytes(file_bytes)
+        cite={'type':'file','path':str(file_path),'sha256':digest(file_bytes),'lines':[1,len(file_bytes.splitlines())],'quote':quote}
         self.data['claims']=[{'id':'c','text':text,'kind':'observation','scope':'fixture','label':'SOURCE_PROVEN','citations':[cite],'blast_radius':[]}]
         self.path.write_bytes(encode(self.data))
         return HEADS+'\n'+text+'\nClaims: '+str(self.path)+'\n'

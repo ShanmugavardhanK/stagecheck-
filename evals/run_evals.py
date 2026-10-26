@@ -23,12 +23,14 @@ CHECK_MODULES=['preflight','scope_paths','citations','report_lint','authority','
 
 
 def manifest(tool):
-    paths=sorted(p for p in tool.rglob('*') if p.is_file() and p.name!='MANIFEST.sha256')
-    extra=[tool/'../evidence/claude_audits/tools/verify_manifest.py',tool/'../evidence/claude_audits/tools/verify_state_chain.py',tool/'../qualification/reviews/capture_sp1_evidence.py']
+    paths=sorted(p for p in tool.rglob('*') if p.is_file() and p.name!='MANIFEST.sha256' and not any(part.startswith('.') or part in ('scratch','__pycache__','build','dist') or part.endswith('.egg-info') for part in p.relative_to(tool).parts))
     text=''.join(digest(p.read_bytes())+'  '+str(p.relative_to(tool))+'\n' for p in paths)
-    for p in extra:
-        rel='../qualification/reviews/'+p.name if p.name=='capture_sp1_evidence.py' else '../evidence/claude_audits/tools/'+p.name
-        text+=digest(p.read_bytes())+'  '+rel+'\n'
+    if not (tool/'tools/verify_manifest.py').is_file():
+        extra=[tool/'../evidence/claude_audits/tools/verify_manifest.py',tool/'../evidence/claude_audits/tools/verify_state_chain.py',tool/'../qualification/reviews/capture_sp1_evidence.py']
+        for p in extra:
+            if p.is_file():
+                rel='../qualification/reviews/'+p.name if p.name=='capture_sp1_evidence.py' else '../evidence/claude_audits/tools/'+p.name
+                text+=digest(p.read_bytes())+'  '+rel+'\n'
     (tool/'MANIFEST.sha256').write_text(text)
 
 
@@ -58,7 +60,7 @@ def fixture(out, tool_source, contract_source, programme_source):
     (workspace/'NewArc').mkdir();root=workspace/'NewArc/3m';root.mkdir()
     for rel in ['controls','RWA','RWA/start','build','upstream','qualification','qualification/reviews','evidence','evidence/state_updates','evidence/claude_audits','evidence/claude_audits/tools','evidence/stagecheck']:
         (root/rel).mkdir()
-    tool=root/'stagecheck';shutil.copytree(tool_source,tool)
+    tool=root/'stagecheck';shutil.copytree(tool_source,tool,ignore=shutil.ignore_patterns('scratch','__pycache__','*.pyc','.git','build','dist','*.egg-info'))
     # Installation choices must never enable real product or model execution
     # inside synthetic fixtures. Individual cases supply their own fake grants.
     (tool/'config/commands.json').write_bytes(encode({'enabled':False,'product_grant':None,'commands':[]}))
@@ -68,8 +70,18 @@ def fixture(out, tool_source, contract_source, programme_source):
         item['model']=None
     (tool/'config/agents.json').write_bytes(encode(fixture_agents))
     for name in ['verify_manifest.py','verify_state_chain.py']:
-        shutil.copyfile(programme_source/'evidence/claude_audits/tools'/name,root/'evidence/claude_audits/tools'/name)
-    shutil.copyfile(programme_source/'qualification/reviews/capture_sp1_evidence.py',root/'qualification/reviews/capture_sp1_evidence.py')
+        src = (programme_source/'evidence/claude_audits/tools'/name) if programme_source else None
+        dst = root/'evidence/claude_audits/tools'/name
+        if src and src.is_file():
+            shutil.copyfile(src, dst)
+        else:
+            dst.write_text('#!/usr/bin/env python3\n# synthetic verifier\n')
+    src = (programme_source/'qualification/reviews/capture_sp1_evidence.py') if programme_source else None
+    dst = root/'qualification/reviews/capture_sp1_evidence.py'
+    if src and src.is_file():
+        shutil.copyfile(src, dst)
+    else:
+        dst.write_text('#!/usr/bin/env python3\n# synthetic capture\n')
     state={k:None for k in ['schema_version','programme','architecture','execution_plan','authority','evidence_root','qualification_root','note','source_lock','current_task']}
     state.update(status='SP1_NOT_STARTED',completed_tasks=[],evidence_references=[],open_prerequisites=[])
     protected={k:v for k,v in state.items() if k not in ['status','source_lock','current_task','completed_tasks','evidence_references','open_prerequisites']}
@@ -87,15 +99,35 @@ def fixture(out, tool_source, contract_source, programme_source):
         (root/rel).write_bytes(data)
     start=root/'RWA/start'
     (start/'START_MANIFEST.md').write_text('# Fixture manifest\n'+''.join(f'| `{Path(name).name}` | fixture | `{digest(raw)}` |\n' for name,raw in files.items() if name.startswith('RWA/start/')))
-    text=contract_source.read_text()
-    original=bindings(contract_source)
-    text=text.replace(str(original['root'].parent.parent),str(workspace))
-    # Replace each owner identity with an explicitly synthetic fixture identity.
-    for role,bound in original.items():
-        if isinstance(bound,dict):
-            actual=str(bound['path']).replace(str(original['root'].parent.parent),str(workspace))
-            text=text.replace(bound['sha256'],digest(Path(actual).read_bytes()))
-    text=text.replace(original['protected_sha256'],protected_hash)
+    if contract_source and Path(contract_source).is_file():
+        text=contract_source.read_text()
+        original=bindings(contract_source)
+        text=text.replace(str(original['root'].parent.parent),str(workspace))
+        # Replace each owner identity with an explicitly synthetic fixture identity.
+        for role,bound in original.items():
+            if isinstance(bound,dict):
+                actual=str(bound['path']).replace(str(original['root'].parent.parent),str(workspace))
+                text=text.replace(bound['sha256'],digest(Path(actual).read_bytes()))
+        text=text.replace(original['protected_sha256'],protected_hash)
+    else:
+        text=f"""# Synthetic AGENTS.md Contract
+
+| Current-state pointer | `{root}/controls/DRWA_ACTIVE_STATE.json` | `{digest((root/'controls/DRWA_ACTIVE_STATE.json').read_bytes())}` |
+| Owner grants register | `{root}/controls/OWNER_GRANTS.md` | `{digest((root/'controls/OWNER_GRANTS.md').read_bytes())}` |
+| Failure prevention register | `{root}/controls/FAILURE_PREVENTION.md` | `{digest((root/'controls/FAILURE_PREVENTION.md').read_bytes())}` |
+| Evidence root | `{root}/controls/EVIDENCE_ROOT.json` | `{digest((root/'controls/EVIDENCE_ROOT.json').read_bytes())}` |
+| Qualification tree (§11) | `{root}/controls/QUALIFICATION_ROOT.json` | `{digest((root/'controls/QUALIFICATION_ROOT.json').read_bytes())}` |
+| Product repositories | `{root}/controls/PRODUCT_REPOSITORIES.json` | `{digest((root/'controls/PRODUCT_REPOSITORIES.json').read_bytes())}` |
+| Start manifest | `{start}/START_MANIFEST.md` | `{digest((start/'START_MANIFEST.md').read_bytes())}` |
+
+**Active programme root:** `{root}`
+**Controlling architecture:** `NewArc/3m/RWA/start/RWA_Architecture_v4.2.8.md`, SHA-256 `{digest((start/'RWA_Architecture_v4.2.8.md').read_bytes())}`
+protected and must reproduce SHA-256 `{protected_hash}`
+
+Known excluded locations include:
+`NewArc/3m/RWA/previous`
+Historical citations:
+"""
     contract=workspace/'contract.txt';contract.write_text(text)
     copy=workspace/'instruction_fixture.txt';copy.write_text(text)
     paths=load(tool/'config/paths.json');paths['instruction_copies']=[str(copy)];(tool/'config/paths.json').write_bytes(encode(paths))
@@ -126,7 +158,8 @@ def seed(cid,run,data,root,tool):
     elif cid=='preflight.symlink':
         (tool/'link').symlink_to(tool/'bin/common.py');preserve_manifest=True
     elif cid=='preflight.reused_hash':
-        path=root/'evidence/claude_audits/tools/verify_state_chain.py';path.write_bytes(path.read_bytes()+b'\n# changed\n');preserve_manifest=True
+        path=(tool/'tools/verify_state_chain.py') if (tool/'tools/verify_state_chain.py').is_file() else (root/'evidence/claude_audits/tools/verify_state_chain.py')
+        path.write_bytes(path.read_bytes()+b'\n# changed\n');preserve_manifest=True
     elif cid=='preflight.state_history':
         state=load(root/'controls/DRWA_ACTIVE_STATE.json');state['note']='changed';(root/'controls/DRWA_ACTIVE_STATE.json').write_bytes(encode(state))
     elif cid=='preflight.agent_mapping':
